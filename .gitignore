@@ -1,0 +1,4 @@
+bin/
+hasil/
+*.class
+target/
