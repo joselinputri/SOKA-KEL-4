@@ -1,6 +1,6 @@
 # SIMULASI — CloudSim 3.0.3
 
-Simulasi datacenter CloudSim 3.0.3 sesuai draft desain.
+Simulasi datacenter CloudSim 3.0.3.
 
 ## Spesifikasi
 
@@ -74,7 +74,7 @@ Komponen berikut ada di `src/main/java/soka/simulasi/`. Pembagian peran mengikut
 | `MetricsCalculator.java` | Peran 4 | Menghitung makespan, average execution time, average waiting time, resource utilization, dan degree of imbalance. |
 | `RasaExperimentRunner.java` | Peran 5 | Entry point demo untuk membandingkan skenario RASA dan baseline FCFS menggunakan dataset yang sama. |
 
-### Walkthrough Peran 3 — Broker dan binding RASA
+### Broker dan binding RASA
 
 Tugas inti Peran 3 adalah menghubungkan scheduler murni dari Peran 2 dengan CloudSim. `RasaBroker` tidak menghitung ulang algoritma; ia mengambil panjang cloudlet dan MIPS VM, menyerahkannya ke `RasaScheduler`, lalu menerapkan hasil assignment pada cloudlet.
 
@@ -107,7 +107,7 @@ List<Cloudlet> hasil = broker.getCloudletReceivedList();
 
 Tidak perlu mengisi VM cloudlet secara manual. Pastikan setiap cloudlet memiliki ID unik dan `cloudlet.setUserId(brokerId)`.
 
-### Serah Terima ke Peran 4 — Dataset dan metrik
+### Dataset dan metrik
 
 - Peran 4 menyiapkan daftar panjang task GoCJ dalam MI dan membentuk `List<Cloudlet>`; ID cloudlet harus unik dan setiap cloudlet harus memiliki `userId` broker.
 - Urutan cloudlet dalam list menjadi indeks task yang dipakai scheduler. Jangan menetapkan VM sendiri; binding dilakukan oleh `RasaBroker`.
