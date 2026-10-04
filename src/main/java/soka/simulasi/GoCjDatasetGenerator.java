@@ -54,12 +54,12 @@ public final class GoCjDatasetGenerator {
         }
     }
 
-    /** Urutan & proporsi kategori persis sesuai draft desain bagian 1.2. */
+    /** Urutan & kuota kategori = proporsi data asli GoCJ_Dataset_600 (lihat README bagian 3.2). */
     public static final Category[] KATEGORI = {
-            new Category("Small", 210, 3_000, 47_999),
-            new Category("Medium", 180, 48_000, 99_999),
-            new Category("Large", 150, 100_000, 449_999),
-            new Category("Extra Large", 60, 450_000, 999_999),
+            new Category("Small", 58, 3_000, 47_999),
+            new Category("Medium", 285, 48_000, 99_999),
+            new Category("Large", 215, 100_000, 449_999),
+            new Category("Extra Large", 42, 450_000, 999_999),
     };
 
     /**
@@ -92,6 +92,126 @@ public final class GoCjDatasetGenerator {
         for (int i = 0; i < count; i++) {
             list.add((double) (lo + rnd.nextInt((int) (hi - lo + 1))));
         }
+    }
+
+
+    /** @return indeks kategori (0=Small .. 3=Extra Large) untuk panjang task v, atau -1 jika di luar rentang. */
+    public static int indeksKategori(double v) {
+        for (int i = 0; i < KATEGORI.length; i++) {
+            if (v >= KATEGORI[i].miMin && v <= KATEGORI[i].miMax) {
+                return i;
+            }
+        }
+        return -1;
+    }
+
+    /** Sama seperti {@link #generateDariPool(double[], int, long, double[])} dengan proporsi mengikuti pool. */
+    public static double[] generateDariPool(double[] pool, int n, long seed) {
+        return generateDariPool(pool, n, seed, null);
+    }
+
+    /**
+     * Bangkitkan n task SINTETIS dengan cara stratified bootstrap dari data asli:
+     * jumlah task per kategori ditentukan dari proporsi (largest remainder, jadi total
+     * persis n), lalu tiap task diambil acak (dengan pengembalian) dari nilai asli
+     * pada kategori yang sama, dan terakhir urutannya diacak.
+     * Hasilnya sama persis untuk (pool, n, seed, bobot) yang sama, sehingga bisa direproduksi.
+     *
+     * @param pool  data asli (mis. isi GoCJ_Dataset_600)
+     * @param n     jumlah task yang dibangkitkan (boleh lebih besar dari pool.length)
+     * @param seed  seed Random
+     * @param bobot proporsi 4 kategori (Small, Medium, Large, Extra Large; dinormalkan otomatis),
+     *              atau null untuk memakai proporsi data pool
+     */
+    public static double[] generateDariPool(double[] pool, int n, long seed, double[] bobot) {
+        int k = KATEGORI.length;
+        List<List<Double>> kolam = new ArrayList<>();
+        for (int i = 0; i < k; i++) {
+            kolam.add(new ArrayList<Double>());
+        }
+        for (double v : pool) {
+            int idx = indeksKategori(v);
+            if (idx >= 0) {
+                kolam.get(idx).add(v);
+            }
+        }
+
+        double[] p = new double[k];
+        double jumlah = 0;
+        for (int i = 0; i < k; i++) {
+            p[i] = (bobot == null) ? kolam.get(i).size() : bobot[i];
+            jumlah += p[i];
+        }
+        for (int i = 0; i < k; i++) {
+            p[i] /= jumlah;
+            if (p[i] > 0 && kolam.get(i).isEmpty()) {
+                throw new IllegalArgumentException("Pool data asli tidak punya task kategori " + KATEGORI[i].nama);
+            }
+        }
+
+        // Alokasi jumlah task per kategori (largest remainder method)
+        int[] cnt = new int[k];
+        double[] sisa = new double[k];
+        int terbagi = 0;
+        for (int i = 0; i < k; i++) {
+            double x = p[i] * n;
+            cnt[i] = (int) Math.floor(x);
+            sisa[i] = x - cnt[i];
+            terbagi += cnt[i];
+        }
+        while (terbagi < n) {
+            int best = 0;
+            for (int i = 1; i < k; i++) {
+                if (sisa[i] > sisa[best]) {
+                    best = i;
+                }
+            }
+            cnt[best]++;
+            sisa[best] = -1;
+            terbagi++;
+        }
+
+        Random rnd = new Random(seed);
+        List<Double> hasil = new ArrayList<>();
+        for (int i = 0; i < k; i++) {
+            List<Double> src = kolam.get(i);
+            for (int j = 0; j < cnt[i]; j++) {
+                hasil.add(src.get(rnd.nextInt(src.size())));
+            }
+        }
+        Collections.shuffle(hasil, rnd);
+
+        double[] out = new double[hasil.size()];
+        for (int i = 0; i < out.length; i++) {
+            out[i] = hasil.get(i);
+        }
+        return out;
+    }
+
+
+    /**
+     * Replikasi generator RESMI GoCJ (Hussain &amp; Aleem, 2018; file "GoCJ Java Generator.txt").
+     * Algoritma aslinya: simpan 50 nilai dari Original_DataSet.txt pada indeks genap 0,2,...,98;
+     * tiap job ambil rand = nextInt(100); rand genap -> nilai pada indeks rand, rand ganjil ->
+     * nilai pada indeks genap terbesar yang &lt; rand (yaitu rand-1). Hasilnya: tiap dari 50 nilai
+     * asli terpilih dengan peluang sama (1/50), sehingga ekuivalen dengan {@code original[rand / 2]}.
+     * Bedanya dengan aslinya hanya Random diberi seed, supaya hasil bisa direproduksi.
+     *
+     * @param original isi Original_DataSet.txt (50 nilai MI)
+     * @param n        jumlah job yang dibangkitkan
+     * @param seed     seed Random
+     */
+    public static double[] generateResmi(double[] original, int n, long seed) {
+        if (original.length != 50) {
+            throw new IllegalArgumentException("Original_DataSet harus berisi 50 nilai, ditemukan " + original.length);
+        }
+        Random rnd = new Random(seed);
+        double[] out = new double[n];
+        for (int i = 0; i < n; i++) {
+            int rand = rnd.nextInt(100);
+            out[i] = original[rand / 2];
+        }
+        return out;
     }
 
     /**

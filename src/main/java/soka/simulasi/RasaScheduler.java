@@ -88,6 +88,13 @@ public final class RasaScheduler {
      * @param vmMips        kecepatan tiap VM (MIPS), index = ID VM
      * @return daftar Assignment, terurut sesuai urutan round (bukan urutan task ID)
      */
+    /**
+     * @deprecated Versi AWAL: menentukan strategi ronde pertama dari paritas jumlah TASK.
+     * Implementasi final (sesuai paper dan draft design) memakai paritas jumlah VM, yaitu
+     * {@link #schedule(double[], double[], Mode)} dengan {@link Mode#RASA}. Metode ini hanya
+     * dipertahankan karena masih dipakai RasaSchedulerTest.
+     */
+    @Deprecated
     public static List<Assignment> schedule(double[] taskLengthsMI, double[] vmMips) {
         int nTask = taskLengthsMI.length;
         int nVm = vmMips.length;
@@ -161,6 +168,12 @@ public final class RasaScheduler {
      * Pada mode RASA, strategi round pertama ditentukan oleh paritas JUMLAH
      * RESOURCE (VM), bukan jumlah task: ganjil -> Min-Min dulu, genap -> Max-Min dulu.
      * Setelah itu strategi berselang-seling tiap round.
+     *
+     * <p><b>Aturan tie-break (hasil deterministik):</b> perbandingan memakai &lt; dan &gt; ketat,
+     * jadi jika dua kandidat punya completion time sama, yang dipilih adalah yang pertama
+     * ditemukan, yaitu VM dengan index terkecil (untuk VM terbaik suatu task) dan task dengan
+     * index terkecil (untuk pemilihan task di tiap ronde). Karena itu data yang punya banyak
+     * nilai kembar tetap menghasilkan jadwal yang sama pada urutan input yang sama.
      */
     public static List<Assignment> schedule(double[] taskLengthsMI, double[] vmMips, Mode mode) {
         int nTask = taskLengthsMI.length;

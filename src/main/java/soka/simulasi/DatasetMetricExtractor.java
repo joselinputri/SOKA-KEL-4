@@ -122,7 +122,21 @@ public class DatasetMetricExtractor {
             return x;
         }
 
+        /** Buat Dataset dari array panjang task (label kategori dihitung otomatis). */
+        static Dataset dariMi(double[] mi, String sumber) {
+            Dataset x = new Dataset();
+            x.mi = mi;
+            x.kategori = label(mi);
+            x.sumber = sumber;
+            return x;
+        }
+
         static Dataset ambil(Dataset d, int n) {
+            if (n > d.mi.length) {
+                // Arrays.copyOf akan mengisi 0 jika n > panjang data -> task panjang 0 dan hasil salah.
+                throw new IllegalArgumentException("Dataset hanya punya " + d.mi.length
+                        + " task, diminta " + n + ". Pakai GoCjDatasetGenerator.generateDariPool().");
+            }
             Dataset x = new Dataset();
             x.mi = Arrays.copyOf(d.mi, n);
             x.kategori = Arrays.copyOf(d.kategori, n);
@@ -430,61 +444,241 @@ public class DatasetMetricExtractor {
         return Math.sqrt(s / v.length);
     }
 
+    // Agg: kumpulan metrik dari beberapa run untuk satu algoritma
+    static class Agg {
+        final double[] mk, gp, di, ut, wt, tu;
+
+        Agg(int run) {
+            mk = new double[run];
+            gp = new double[run];
+            di = new double[run];
+            ut = new double[run];
+            wt = new double[run];
+            tu = new double[run];
+        }
+
+        void set(int r, Metrics m) {
+            mk[r] = m.makespan;
+            gp[r] = m.gap;
+            di[r] = m.di;
+            ut[r] = m.util;
+            wt[r] = m.avgWait;
+            tu[r] = m.avgTurn;
+        }
+
+        String csv() {
+            return String.format(Locale.US, "%.4f,%.4f,%.4f,%.4f,%.6f,%.6f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f",
+                    mean(mk), std(mk), mean(gp), std(gp), mean(di), std(di),
+                    mean(ut), std(ut), mean(wt), std(wt), mean(tu), std(tu));
+        }
+    }
+
+    static final String AGG_HEADER = "makespan_mean,makespan_std,gap_pct_mean,gap_pct_std,di_mean,di_std,"
+            + "util_mean,util_std,avg_waiting_mean,avg_waiting_std,avg_turnaround_mean,avg_turnaround_std";
+
+    // Baris-baris ringkasan_dataset.csv (bukti dataset sintetis), diisi oleh skala() dan skenarioBeban()
+    static final List<String> RINGKASAN = new ArrayList<>();
+
+    // Sweep: dataset ASLI dengan urutan task diacak (seed 1000..), laporkan mean dan std
     static void sweep(Dataset d, int run, String dir) throws Exception {
-        System.out.println("\nMean dan std dari " + run + " urutan task acak");
+        System.out.println("\n[Sweep] Mean dan std dari " + run + " urutan task acak (seed 1000.." + (1000 + run - 1) + ")");
         System.out.printf("%-8s %-22s %-18s %-22s%n", "algo", "makespan", "DI", "avg turnaround");
         try (FileWriter w = new FileWriter(new File(dir, "sweep_acak.csv"))) {
-            w.write("algo,makespan_mean,makespan_std,di_mean,di_std,avg_turnaround_mean,avg_turnaround_std,"
-                    + "avg_waiting_mean,avg_waiting_std\n");
+            w.write("algo,runs," + AGG_HEADER + "\n");
             for (String a : ALGO) {
-                double[] mk = new double[run], di = new double[run], tu = new double[run], wt = new double[run];
+                Agg g = new Agg(run);
                 for (int r = 0; r < run; r++) {
-                    Metrics m = simulasi(a, Dataset.acak(d, 1000 + r));
-                    mk[r] = m.makespan;
-                    di[r] = m.di;
-                    tu[r] = m.avgTurn;
-                    wt[r] = m.avgWait;
+                    g.set(r, simulasi(a, Dataset.acak(d, 1000 + r)));
                 }
                 System.out.printf(Locale.US, "%-8s %9.2f +- %-9.2f %7.4f +- %-7.4f %9.2f +- %-8.2f%n",
-                        a, mean(mk), std(mk), mean(di), std(di), mean(tu), std(tu));
-                w.write(String.format(Locale.US, "%s,%.4f,%.4f,%.6f,%.6f,%.4f,%.4f,%.4f,%.4f%n", a,
-                        mean(mk), std(mk), mean(di), std(di), mean(tu), std(tu), mean(wt), std(wt)));
+                        a, mean(g.mk), std(g.mk), mean(g.di), std(g.di), mean(g.tu), std(g.tu));
+                w.write(a + "," + run + "," + g.csv() + "\n");
             }
         }
     }
 
-    // Skala: pengaruh jumlah task terhadap selisih ke batas bawah
-    static void skala(Dataset d, int run, String dir) throws Exception {
-        int[] ukuran = {100, 200, 400, 600};
-        System.out.println("\nPengaruh jumlah task (mean dari " + run + " urutan acak, selisih ke batas bawah)");
+    static final String DIR_GOCJ = "dataset/GoCJ Google Cloud Jobs Dataset";
+
+    // Pilih dataset untuk n task: (1) file RESMI GoCJ_Dataset_n.txt bila ada,
+    // (2) generator resmi GoCJ (butuh Original_DataSet.txt) bila n tidak punya file resmi,
+    // (3) cadangan: bootstrap per kategori dari data asli. Hasil (2) dan (3) disimpan sebagai bukti.
+    static Dataset datasetUntukSkala(Dataset asli, int n, long seed) throws IOException {
+        File resmi = new File(DIR_GOCJ, "GoCJ_Dataset_" + n + ".txt");
+        if (resmi.isFile()) {
+            double[] mi = GoCjDatasetGenerator.loadFromFile(resmi.getPath());
+            RINGKASAN.add(DatasetArsip.baris("GoCJ_Dataset_" + n + " (file resmi)", mi));
+            return Dataset.dariMi(mi, "GoCJ resmi " + resmi.getName());
+        }
+        File orig = new File(DIR_GOCJ, "Original_DataSet.txt");
+        double[] mi;
+        String nama;
+        if (orig.isFile()) {
+            mi = GoCjDatasetGenerator.generateResmi(GoCjDatasetGenerator.loadFromFile(orig.getPath()), n, seed);
+            nama = "GoCJ_generator_resmi_" + n + "_seed" + seed;
+        } else {
+            mi = GoCjDatasetGenerator.generateDariPool(asli.mi, n, seed);
+            nama = "sintetis_bootstrap_" + n + "_seed" + seed;
+        }
+        DatasetArsip.simpan(mi, new File("dataset/sintetis", nama + ".txt"));
+        RINGKASAN.add(DatasetArsip.baris(nama, mi));
+        return Dataset.dariMi(mi, nama);
+    }
+
+    // Skala: untuk tiap n, SATU dataset tetap (file resmi / generator resmi ber-seed), lalu 'run' urutan
+    // task acak (seed 2000..). Dataset yang sama -> algoritma deterministik (RASA, Min-Min, Max-Min)
+    // harus std = 0; variasi hanya muncul pada FCFS dan RR yang sensitif terhadap urutan.
+    static void skala(Dataset asli, int run, int[] ukuran, String dir) throws Exception {
+        System.out.println("\n[Skala] Pengaruh jumlah task (dataset GoCJ, mean dari " + run
+                + " urutan acak, seed 2000.." + (2000 + run - 1) + ")");
         System.out.printf("%-6s", "task");
         for (String a : ALGO) {
-            System.out.printf(" %-20s", a);
+            System.out.printf(" %-22s", a + " makespan (gap)");
         }
         System.out.println();
         try (FileWriter w = new FileWriter(new File(dir, "skala_task.csv"))) {
-            w.write("jumlah_task,algo,makespan_mean,gap_pct_mean\n");
+            w.write("jumlah_task,sumber,algo,runs," + AGG_HEADER + "\n");
             for (int n : ukuran) {
-                System.out.printf("%-6d", n);
-                for (String a : ALGO) {
-                    double[] mk = new double[run], gp = new double[run];
-                    for (int r = 0; r < run; r++) {
-                        Metrics m = simulasi(a, Dataset.ambil(Dataset.acak(d, 2000 + r), n));
-                        mk[r] = m.makespan;
-                        gp[r] = m.gap;
+                Dataset dasar = datasetUntukSkala(asli, n, 2000);
+                boolean resmi = dasar.sumber.startsWith("GoCJ resmi");
+                Agg[] g = new Agg[ALGO.length];
+                for (int i = 0; i < g.length; i++) {
+                    g[i] = new Agg(run);
+                }
+                for (int r = 0; r < run; r++) {
+                    Dataset s = Dataset.acak(dasar, 2000 + r);
+                    for (int i = 0; i < ALGO.length; i++) {
+                        g[i].set(r, simulasi(ALGO[i], s));
                     }
-                    System.out.printf(Locale.US, " %9.1f (%5.2f%%)   ", mean(mk), mean(gp));
-                    w.write(String.format(Locale.US, "%d,%s,%.4f,%.4f%n", n, a, mean(mk), mean(gp)));
+                }
+                System.out.printf("%-6d", n);
+                for (int i = 0; i < ALGO.length; i++) {
+                    System.out.printf(Locale.US, " %9.1f (%6.2f%%)  ", mean(g[i].mk), mean(g[i].gp));
+                    w.write(n + "," + (resmi ? "file_resmi" : "generator") + "," + ALGO[i] + "," + run + "," + g[i].csv() + "\n");
                 }
                 System.out.println();
             }
         }
     }
 
-    // Main: args[0] = path dataset, args[1] = jumlah run sweep
+    // Skenario beban: dataset ringan / seimbang (proporsi asli) / berat, n task, 'run' kali (seed 3000..)
+    static final String[] BEBAN_NAMA = {"ringan", "seimbang_asli", "berat"};
+    // proporsi Small, Medium, Large, Extra Large; null = ikut proporsi data asli
+    static final double[][] BEBAN_BOBOT = {
+        {0.60, 0.30, 0.08, 0.02},
+        null,
+        {0.05, 0.20, 0.45, 0.30}
+    };
+
+    static void skenarioBeban(Dataset asli, int run, int n, String dir) throws Exception {
+        System.out.println("\n[Beban] " + n + " task, skenario ringan / seimbang / berat (mean dari " + run + " run)");
+        System.out.printf("%-14s %-8s %-22s %-10s %-10s%n", "skenario", "algo", "makespan", "DI", "avg wait");
+        try (FileWriter w = new FileWriter(new File(dir, "beban_dataset.csv"))) {
+            w.write("skenario,jumlah_task,algo,runs," + AGG_HEADER + "\n");
+            for (int b = 0; b < BEBAN_NAMA.length; b++) {
+                Agg[] g = new Agg[ALGO.length];
+                for (int i = 0; i < g.length; i++) {
+                    g[i] = new Agg(run);
+                }
+                for (int r = 0; r < run; r++) {
+                    long seed = 3000 + r;
+                    double[] mi = GoCjDatasetGenerator.generateDariPool(asli.mi, n, seed, BEBAN_BOBOT[b]);
+                    if (r == 0) {
+                        String nama = "beban_" + BEBAN_NAMA[b] + "_" + n + "_seed" + seed;
+                        DatasetArsip.simpan(mi, new File("dataset/sintetis", nama + ".txt"));
+                        RINGKASAN.add(DatasetArsip.baris(nama, mi));
+                    }
+                    Dataset s = Dataset.dariMi(mi, "beban " + BEBAN_NAMA[b]);
+                    for (int i = 0; i < ALGO.length; i++) {
+                        g[i].set(r, simulasi(ALGO[i], s));
+                    }
+                }
+                for (int i = 0; i < ALGO.length; i++) {
+                    System.out.printf(Locale.US, "%-14s %-8s %9.1f +- %-8.2f %-10.4f %-10.1f%n",
+                            BEBAN_NAMA[b], ALGO[i], mean(g[i].mk), std(g[i].mk), mean(g[i].di), mean(g[i].wt));
+                    w.write(BEBAN_NAMA[b] + "," + n + "," + ALGO[i] + "," + run + "," + g[i].csv() + "\n");
+                }
+            }
+        }
+    }
+
+    // Uji konsistensi: dataset DAN urutan sama dijalankan berulang -> hasil harus identik
+    static void ujiUlang(Dataset d, int ulang, String dir) throws Exception {
+        System.out.println("\n[Uji ulang] Dataset & urutan sama dijalankan " + ulang + " kali per algoritma");
+        System.out.printf("%-8s %-14s %-14s %-10s%n", "algo", "makespan run-1", "makespan run-N", "status");
+        try (FileWriter w = new FileWriter(new File(dir, "uji_ulang.csv"))) {
+            w.write("algo,run,makespan,degree_of_imbalance,avg_waiting_time,avg_turnaround_time,sama_dengan_run1\n");
+            for (String a : ALGO) {
+                Metrics pertama = null, terakhir = null;
+                boolean semuaSama = true;
+                for (int r = 1; r <= ulang; r++) {
+                    Metrics m = simulasi(a, d);
+                    boolean sama = true;
+                    if (pertama == null) {
+                        pertama = m;
+                    } else {
+                        sama = Math.abs(m.makespan - pertama.makespan) < 1e-9
+                                && Math.abs(m.di - pertama.di) < 1e-12
+                                && Math.abs(m.avgWait - pertama.avgWait) < 1e-9
+                                && Math.abs(m.avgTurn - pertama.avgTurn) < 1e-9;
+                    }
+                    semuaSama &= sama;
+                    terakhir = m;
+                    w.write(String.format(Locale.US, "%s,%d,%.4f,%.6f,%.4f,%.4f,%s%n",
+                            a, r, m.makespan, m.di, m.avgWait, m.avgTurn, sama));
+                }
+                System.out.printf(Locale.US, "%-8s %-14.4f %-14.4f %-10s%n",
+                        a, pertama.makespan, terakhir.makespan, semuaSama ? "KONSISTEN" : "BEDA!");
+            }
+        }
+    }
+
+    // Waiting & turnaround rata-rata per kategori task (data run utama, urutan asli dataset)
+    static void waitingPerKategori(List<Metrics> semua, String dir) throws IOException {
+        try (FileWriter w = new FileWriter(new File(dir, "waiting_per_kategori.csv"))) {
+            w.write("algo,kategori,jumlah_task,avg_waiting_time,avg_turnaround_time\n");
+            for (Metrics m : semua) {
+                for (GoCjDatasetGenerator.Category k : GoCjDatasetGenerator.KATEGORI) {
+                    double[] a = m.perKategori.get(k.nama);
+                    if (a == null) {
+                        continue;
+                    }
+                    w.write(String.format(Locale.US, "%s,%s,%d,%.4f,%.4f%n",
+                            m.label, k.nama, (int) a[2], a[1] / a[2], a[0] / a[2]));
+                }
+            }
+        }
+    }
+
+    static int[] ukuranDefault() {
+        int[] u = new int[10];
+        for (int i = 0; i < u.length; i++) {
+            u[i] = (i + 1) * 100; // 100, 200, ..., 1000
+        }
+        return u;
+    }
+
+    static int[] parseUkuran(String s) {
+        String[] p = s.split(",");
+        int[] u = new int[p.length];
+        for (int i = 0; i < p.length; i++) {
+            u[i] = Integer.parseInt(p[i].trim());
+        }
+        return u;
+    }
+
+    /**
+     * Main. Semua argumen opsional:
+     *   args[0] path dataset asli      (default dataset/GoCJ_Dataset_600.txt)
+     *   args[1] jumlah run untuk sweep, skala, dan beban   (default 30)
+     *   args[2] daftar ukuran skala, pisah koma            (default 100,200,...,1000)
+     *   args[3] jumlah pengulangan uji konsistensi         (default 5)
+     * Contoh sampai 3000 task: java ... DatasetMetricExtractor dataset/GoCJ_Dataset_600.txt 30 100,500,1000,2000,3000
+     */
     public static void main(String[] args) throws Exception {
         String path = args.length > 0 ? args[0] : "dataset/GoCJ_Dataset_600.txt";
         int run = args.length > 1 ? Integer.parseInt(args[1]) : 30;
+        int[] ukuran = args.length > 2 ? parseUkuran(args[2]) : ukuranDefault();
+        int ulang = args.length > 3 ? Integer.parseInt(args[3]) : 5;
 
         Dataset d = Dataset.load(path, GoCjDatasetGenerator.SEED);
         d.print();
@@ -500,8 +694,22 @@ public class DatasetMetricExtractor {
 
         Export.tulis(semua, "hasil");
         Perbandingan.tulis(semua.get(0), semua.subList(1, semua.size()), "hasil");
+        waitingPerKategori(semua, "hasil");
+        RINGKASAN.add(DatasetArsip.baris("GoCJ_asli_" + d.mi.length, d.mi));
+
+        ujiUlang(d, ulang, "hasil");
         sweep(d, run, "hasil");
-        skala(d, Math.min(run, 10), "hasil");
+        skala(d, run, ukuran, "hasil");
+        skenarioBeban(d, run, d.mi.length, "hasil");
+
+        try (FileWriter w = new FileWriter(new File("dataset", "ringkasan_dataset.csv"))) {
+            w.write(DatasetArsip.headerRingkasan());
+            for (String baris : RINGKASAN) {
+                w.write(baris);
+            }
+        }
+        System.out.println("\nDataset sintetis  : dataset/sintetis/*.txt");
+        System.out.println("Ringkasan dataset : dataset/ringkasan_dataset.csv");
         Log.enable();
     }
 }
